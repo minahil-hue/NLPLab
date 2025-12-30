@@ -1,4 +1,6 @@
+import os
 import streamlit as st
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -7,10 +9,19 @@ from langchain.chains import RetrievalQA
 from langchain.docstore.document import Document
 from langchain.prompts import PromptTemplate
 
+# --------------------------------------------------
+# Streamlit Page Config
+# --------------------------------------------------
 st.set_page_config(page_title="Hostel Chatbot", page_icon="🏠")
 
-HF_TOKEN = "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"
+# --------------------------------------------------
+# Hugging Face Token (from Streamlit Secrets)
+# --------------------------------------------------
+HF_TOKEN = os.getenv("HF_TOKEN")
 
+# --------------------------------------------------
+# Hostel Knowledge Base
+# --------------------------------------------------
 HOSTEL_INFO = """
 HOSTEL INFORMATION
 
@@ -45,27 +56,29 @@ Booking Process:
 3. Pay security deposit: Rs. 5000 (refundable)
 4. Pay first month rent
 5. Get room keys and ID card
-
-Contact:
-Phone: +91-9876543210
-Email: info@hostelhome.com
-Address: 123 University Road, Rawalpindi, Punjab
 """
 
-if 'messages' not in st.session_state:
+# --------------------------------------------------
+# Session State Initialization
+# --------------------------------------------------
+if "messages" not in st.session_state:
     st.session_state.messages = []
-if 'vectorstore' not in st.session_state:
-    st.session_state.vectorstore = None
-if 'qa_chain' not in st.session_state:
+
+if "qa_chain" not in st.session_state:
     st.session_state.qa_chain = None
 
+# --------------------------------------------------
+# Load Embeddings (Cached)
+# --------------------------------------------------
 @st.cache_resource
 def load_embeddings():
     return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'}
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
+# --------------------------------------------------
+# Load LLM (Cached)
+# --------------------------------------------------
 @st.cache_resource
 def load_llm():
     return HuggingFaceHub(
@@ -74,104 +87,91 @@ def load_llm():
         model_kwargs={"temperature": 0.5, "max_length": 512}
     )
 
+# --------------------------------------------------
+# Initialize Chatbot
+# --------------------------------------------------
 def initialize_chatbot():
-    if st.session_state.vectorstore is None:
+    if st.session_state.qa_chain is None:
         with st.spinner("Loading chatbot..."):
-            try:
-                embeddings = load_embeddings()
-                documents = [Document(page_content=HOSTEL_INFO)]
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=500,
-                    chunk_overlap=50
-                )
-                chunks = text_splitter.split_documents(documents)
-                vectorstore = FAISS.from_documents(chunks, embeddings)
-                st.session_state.vectorstore = vectorstore
-                llm = load_llm()
-                prompt_template = """Answer the question based on the context below. 
-If you don't know, say you don't have that information.
+            documents = [Document(page_content=HOSTEL_INFO)]
 
-Context: {context}
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=500,
+                chunk_overlap=50
+            )
+            chunks = splitter.split_documents(documents)
 
-Question: {question}
+            embeddings = load_embeddings()
+            vectorstore = FAISS.from_documents(chunks, embeddings)
 
-Answer:"""
-                PROMPT = PromptTemplate(
-                    template=prompt_template, 
-                    input_variables=["context", "question"]
-                )
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=vectorstore.as_retriever(search_kwargs={"k": 2}),
-                    return_source_documents=False,
-                    chain_type_kwargs={"prompt": PROMPT}
-                )
-                st.session_state.qa_chain = qa_chain
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-                return False
-    return True
+            prompt = PromptTemplate(
+                template="""
+Answer the question using the context below.
+If the answer is not in the context, say you don't have that information.
 
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+""",
+                input_variables=["context", "question"]
+            )
+
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=load_llm(),
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 2}),
+                chain_type_kwargs={"prompt": prompt}
+            )
+
+            st.session_state.qa_chain = qa_chain
+
+# --------------------------------------------------
+# Get Chatbot Response
+# --------------------------------------------------
 def get_response(question):
-    try:
-        response = st.session_state.qa_chain.run(question)
-        return response.strip()
-    except:
-        return "Sorry, I encountered an error. Please try again."
+    return st.session_state.qa_chain.run(question)
 
+# --------------------------------------------------
+# Main App
+# --------------------------------------------------
 def main():
     st.title("🏠 Hostel Chatbot")
-    st.markdown("Ask me anything about the hostel!")
-    
+    st.markdown("Ask me anything about the hostel.")
+
     with st.sidebar:
-        st.header("About")
-        st.info("AI-powered chatbot for hostel questions")
-        st.markdown("### Sample Questions")
+        st.header("Sample Questions")
         st.markdown("""
-        - What room types are available?
-        - What are the meal timings?
-        - What facilities do you have?
-        - How do I book a room?
-        """)
+- What room types are available?
+- What are the meal timings?
+- What facilities do you have?
+- How do I book a room?
+""")
         if st.button("Clear Chat"):
             st.session_state.messages = []
             st.rerun()
-    
-    if not initialize_chatbot():
-        st.error("Failed to load chatbot.")
-        return
-    
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    if prompt := st.chat_input("Type your question..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+
+    initialize_chatbot()
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if user_input := st.chat_input("Type your question..."):
+        st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_input)
+
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = get_response(prompt)
+                response = get_response(user_input)
                 st.markdown(response)
+
         st.session_state.messages.append({"role": "assistant", "content": response})
+
 
 if __name__ == "__main__":
     main()
-```
-
-4. Click "Commit new file"
-
-### Step 3: Update requirements.txt
-
-1. Click on `requirements.txt` in your repo
-2. Click the pencil icon (✏️) to edit
-3. **Replace everything** with:
-```
-streamlit
-langchain
-langchain-community
-faiss-cpu
-sentence-transformers
-huggingface-hub
-transformers
